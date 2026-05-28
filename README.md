@@ -12,23 +12,7 @@ Real-time fraud scoring system built on Kubernetes (Kind), covering data generat
 
 ## Architecture Overview
 
-```
-Raw data (Parquet/JSON)
-    └─► Bronze (Delta Lake / MinIO)
-            └─► Silver (cleaned, deduplicated)
-                    └─► Gold (PostgreSQL)
-                            ├─► feat_customer_90d  ─┐
-                            ├─► feat_stream_30m    ─┼─► ml_fraud_training
-                            └─► fact_transaction   ─┘
-                                                        ├─► dag_ml_train       → ml_model_registry
-                                                        ├─► dag_ml_batch_score → ml_fraud_scores
-                                                        └─► dag_ml_retrain_trigger
-                                                                        ↓
-                                                        FastAPI inference (KServe)
-                                                                        ↓
-                                                        Prometheus + Grafana monitoring
-```
-
+![Architechture](./evidence/architechture.svg)
 ---
 
 ## Prerequisites

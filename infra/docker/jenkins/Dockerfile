@@ -1,8 +1,10 @@
-FROM jenkins/inbound-agent:3355.v388858a_47b_33-20-jdk17
+# Jenkins inbound-agent with kubectl, Helm, Docker CLI, and Python 3
+# Base: inbound-agent (JNLP) — correct base for Kubernetes plugin agent pods
+FROM jenkins/inbound-agent:latest-jdk17
 
 USER root
 
-# ── kubectl v1.29 ──────────────────────────────────────────────────────────────
+# ── kubectl (pinned) ───────────────────────────────────────────────────────────
 RUN curl -LO "https://dl.k8s.io/release/v1.29.0/bin/linux/amd64/kubectl" \
     && chmod +x kubectl \
     && mv kubectl /usr/local/bin/kubectl
@@ -10,7 +12,7 @@ RUN curl -LO "https://dl.k8s.io/release/v1.29.0/bin/linux/amd64/kubectl" \
 # ── Helm 3 ─────────────────────────────────────────────────────────────────────
 RUN curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
 
-# ── Docker CLI (client only — socket mounted from host node) ───────────────────
+# ── Docker CLI only (daemon runs as DinD sidecar in the pod) ───────────────────
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl gnupg \
     && install -m 0755 -d /etc/apt/keyrings \
@@ -32,7 +34,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # ── Verify ─────────────────────────────────────────────────────────────────────
-RUN kubectl version --client --short 2>/dev/null || kubectl version --client \
+RUN kubectl version --client \
     && helm version --short \
     && docker --version \
     && python3 --version

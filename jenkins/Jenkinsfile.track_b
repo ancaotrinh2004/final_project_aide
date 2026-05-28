@@ -19,7 +19,7 @@ spec:
   serviceAccountName: default
   containers:
   - name: agent
-    image: ancaotrinh/jenkins-agent:latest
+    image: ancaotrinh/jenkins:latest
     imagePullPolicy: Always
     command: [cat]
     tty: true
