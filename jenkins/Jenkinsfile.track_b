@@ -9,7 +9,31 @@
 //   - FORCE_DEPLOY=true → same effect, works on any branch
 
 pipeline {
-    agent any
+    agent {
+        kubernetes {
+            defaultContainer 'agent'
+            yaml """
+apiVersion: v1
+kind: Pod
+spec:
+  serviceAccountName: default
+  containers:
+  - name: agent
+    image: ancaotrinh/jenkins-agent:latest
+    imagePullPolicy: Always
+    command: [cat]
+    tty: true
+    volumeMounts:
+    - name: docker-sock
+      mountPath: /var/run/docker.sock
+  volumes:
+  - name: docker-sock
+    hostPath:
+      path: /var/run/docker.sock
+      type: Socket
+"""
+        }
+    }
 
     options {
         timeout(time: 35, unit: 'MINUTES')
