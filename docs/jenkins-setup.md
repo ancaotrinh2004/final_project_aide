@@ -153,6 +153,35 @@ ClusterRole là bắt buộc vì pipeline cần tương tác cross-namespace và
 
 ---
 
+## 0.9. Build và Push Jenkins Agent Image
+
+Pipeline agent cần `helm`, `kubectl`, `docker`, `python3`. Build custom image một lần:
+
+```bash
+# Build từ project root
+docker build \
+  -f infra/docker/jenkins-agent/Dockerfile \
+  -t ancaotrinh/jenkins-agent:latest \
+  infra/docker/jenkins-agent/
+
+# Push lên Docker Hub
+docker push ancaotrinh/jenkins-agent:latest
+```
+
+Image bao gồm:
+
+| Tool | Version |
+|---|---|
+| kubectl | v1.29.0 |
+| Helm | 3.x (latest) |
+| Docker CLI | latest stable |
+| Python 3 + venv | system |
+
+> Image được khai báo trong cả 3 Jenkinsfile qua Kubernetes pod template.
+> Kind cluster dùng containerd, không có `/var/run/docker.sock` trong node. Vì vậy mỗi pipeline pod chạy một **Docker-in-Docker (DinD) sidecar** (`docker:27-dind`, privileged). Agent kết nối DinD qua `DOCKER_HOST=tcp://localhost:2376`. Không cần mount hostPath.
+
+---
+
 ## Changeset Logic
 
 Mỗi stage chỉ chạy khi đúng file thay đổi:
