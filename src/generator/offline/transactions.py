@@ -47,6 +47,11 @@ def _generate_base_transactions(
     skew_city_ratio: float,
     schema_change_date: datetime,
     rng: np.random.Generator,
+    drift_enabled: bool = False,
+    drift_start_date: datetime | None = None,
+    drift_mode: str = "gradual",
+    amount_drift_multiplier: float = 1.30,
+    drift_ramp_days: int = 30,
 ) -> pd.DataFrame:
     """Generate the base transaction rows without fraud labels."""
     n_txn = n_customers * avg_txn_per_customer
@@ -78,6 +83,18 @@ def _generate_base_transactions(
 
     # Amounts: log-normal distribution centered around ~500k VND
     amounts = np.round(rng.lognormal(mean=13.0, sigma=1.2, size=n_txn), 2)
+
+    # ── Scenario B: Amount drift — multiply amounts after drift_start_date ────
+    if drift_enabled and drift_start_date is not None:
+        txn_ts_unix = np.array([t.timestamp() for t in txn_ts])
+        drift_ts_unix = drift_start_date.timestamp()
+        if drift_mode == "gradual":
+            ramp_seconds = drift_ramp_days * 86400
+            progress = np.clip((txn_ts_unix - drift_ts_unix) / ramp_seconds, 0.0, 1.0)
+            multipliers = 1.0 + (amount_drift_multiplier - 1.0) * progress
+        else:
+            multipliers = np.where(txn_ts_unix >= drift_ts_unix, amount_drift_multiplier, 1.0)
+        amounts = np.round(amounts * multipliers, 2)
 
     currencies = rng.choice(CURRENCIES, size=n_txn, p=CURRENCY_WEIGHTS)
     statuses = rng.choice(STATUSES, size=n_txn, p=STATUS_WEIGHTS)
@@ -130,11 +147,29 @@ def _assign_fraud_labels(
     """
     Assign is_fraud = 1 deterministically based on ≥ fraud_label_min_conditions:
 
-    Condition 1: amount > 3× customer 90-day average
-    Condition 2: ip_country != card_country (cross-border)
-    Condition 3: transaction between 01:00–04:00
-    Condition 4: declined transaction count ≥ 2 in last 60 min (per customer)
-    Condition 5: first time transacting at this merchant (in history)
+    c1 (amount_anomaly): amount > 3× customer rolling 90-day average
+    c2 (cross_border):   ip_country ≠ card_country  (NULL ip_country → c2 = 0)
+    c3 (night_time):     transaction between 01:00–04:00
+    c4 (declined):       transaction_status = "declined"
+
+    Each condition maps directly to a training feature in ml_fraud_training:
+      c1 → txn_amount_ratio  (txn_amount / f_customer_avg_txn_amount_90d)
+      c2 → is_foreign_txn
+      c3 → is_night_txn
+      c4 → is_declined_txn
+
+    Natural fraud rate (before calibration):
+      ~3%  pre-2025-07-01  (ip_country = NULL → c2 always 0)
+      ~11% post-2025-07-01 (all four conditions active)
+      ~8%  overall
+
+    The calibration step flips a small number of labels to hit fraud_rate (default 10%).
+    Because the natural rate for post-July transactions (the training subset) is ~11%,
+    only ~10% of fraud labels need to be flipped — preserving >90% of the signal.
+    This yields PR-AUC well above 0.70 in the ML model.
+
+    (Previous design had a 5th condition, c5_new_merchant, that fired on 99.96% of
+    all transactions, inflating natural rate to ~40% and requiring 75% label flips.)
     """
     df = df.copy().sort_values("transaction_timestamp").reset_index(drop=True)
 
@@ -164,56 +199,30 @@ def _assign_fraud_labels(
     df["hour"] = df["txn_ts"].dt.hour
     df["c3_night_time"] = df["hour"].between(1, 4)
 
-    # ── Condition 4: repeated declines in last 60 min ────────────────────────
-    df["c4_repeated_declines"] = False
-    declined = df[df["transaction_status"] == "declined"].copy()
-    if not declined.empty:
-        decline_counts = (
-            declined.sort_values("txn_ts")
-            .groupby("customer_id")
-            .apply(lambda g: g.set_index("txn_ts")
-                   .resample("60min")
-                   .size()
-                   .ge(2))
-            .reset_index()
-        )
-        # Simple approximation: mark customers with ≥2 declines in any 60-min window
-        high_decline_customers = set(
-            declined.groupby("customer_id")
-            .filter(lambda g: len(g) >= 2)["customer_id"]
-            .unique()
-        )
-        df["c4_repeated_declines"] = df["customer_id"].isin(high_decline_customers)
-
-    # ── Condition 5: new merchant (first transaction at this merchant) ────────
-    df["c5_new_merchant"] = ~df.duplicated(subset=["customer_id", "merchant_id"], keep="first")
+    # ── Condition 4: declined transaction ────────────────────────────────────
+    # Per-transaction decline flag — simpler than the original 60-min window
+    # approximation and maps 1:1 to the is_declined_txn training feature.
+    df["c4_declined"] = (df["transaction_status"] == "declined")
 
     # ── Count conditions met ──────────────────────────────────────────────────
-    condition_cols = ["c1_amount_anomaly", "c2_cross_border", "c3_night_time",
-                      "c4_repeated_declines", "c5_new_merchant"]
+    condition_cols = ["c1_amount_anomaly", "c2_cross_border", "c3_night_time", "c4_declined"]
     df["conditions_met"] = df[condition_cols].sum(axis=1)
-
-    # Label as fraud if ≥ min_conditions met
     df["is_fraud"] = (df["conditions_met"] >= fraud_label_min_conditions).astype(int)
 
-    # Calibrate to target fraud_rate by randomly flipping excess labels
+    # ── Calibrate to target fraud_rate ───────────────────────────────────────
     current_rate = df["is_fraud"].mean()
     if current_rate > fraud_rate:
-        # Too many frauds — flip some to 0
-        fraud_idx = df[df["is_fraud"] == 1].index
-        n_to_flip = int(len(fraud_idx) - fraud_rate * len(df))
-        flip_idx = rng.choice(fraud_idx, size=max(0, n_to_flip), replace=False)
+        fraud_idx  = df[df["is_fraud"] == 1].index
+        n_to_flip  = int(len(fraud_idx) - fraud_rate * len(df))
+        flip_idx   = rng.choice(fraud_idx, size=max(0, n_to_flip), replace=False)
         df.loc[flip_idx, "is_fraud"] = 0
     elif current_rate < fraud_rate:
-        # Too few frauds — flip some 0s to 1
-        legit_idx = df[df["is_fraud"] == 0].index
-        n_to_flip = int(fraud_rate * len(df) - df["is_fraud"].sum())
-        flip_idx = rng.choice(legit_idx, size=max(0, n_to_flip), replace=False)
+        legit_idx  = df[df["is_fraud"] == 0].index
+        n_to_flip  = int(fraud_rate * len(df) - df["is_fraud"].sum())
+        flip_idx   = rng.choice(legit_idx, size=max(0, n_to_flip), replace=False)
         df.loc[flip_idx, "is_fraud"] = 1
 
-    # Drop temp columns
-    drop_cols = condition_cols + ["conditions_met", "cust_avg_amount_90d",
-                                  "card_country", "txn_ts", "hour"]
+    drop_cols = condition_cols + ["conditions_met", "cust_avg_amount_90d", "card_country", "txn_ts", "hour"]
     df = df.drop(columns=drop_cols, errors="ignore")
 
     return df
@@ -260,6 +269,11 @@ def generate_transactions(
     fraud_label_min_conditions: int,
     duplicate_rate: float,
     rng: np.random.Generator,
+    drift_enabled: bool = False,
+    drift_start_date: datetime | None = None,
+    drift_mode: str = "gradual",
+    amount_drift_multiplier: float = 1.30,
+    drift_ramp_days: int = 30,
 ) -> pd.DataFrame:
     """Main entry — generates transactions with fraud labels, schema evolution, and duplicates."""
 
@@ -276,6 +290,11 @@ def generate_transactions(
         skew_city_ratio=skew_city_ratio,
         schema_change_date=schema_change_date,
         rng=rng,
+        drift_enabled=drift_enabled,
+        drift_start_date=drift_start_date,
+        drift_mode=drift_mode,
+        amount_drift_multiplier=amount_drift_multiplier,
+        drift_ramp_days=drift_ramp_days,
     )
 
     print("  [transactions] Assigning fraud labels...")

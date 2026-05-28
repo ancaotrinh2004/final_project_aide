@@ -12,7 +12,6 @@ Output:
     data/raw/offline/merchants.parquet
     data/raw/offline/cards.parquet
     data/raw/offline/transactions/transaction_date=YYYY-MM-DD/*.parquet
-    data/raw/offline/transaction_items/transaction_date=YYYY-MM-DD/*.parquet
     data/raw/streaming/fraud_events.json
     data/raw/quality_reports/quality_report.csv
 """
@@ -30,7 +29,6 @@ from src.generator.offline.customers import generate_customers
 from src.generator.offline.merchants import generate_merchants
 from src.generator.offline.cards import generate_cards
 from src.generator.offline.transactions import generate_transactions
-from src.generator.offline.transaction_items import generate_transaction_items
 from src.generator.streaming.event_producer import generate_streaming_events
 from src.generator.quality.quality_report import compute_offline_quality, save_quality_report
 
@@ -79,6 +77,16 @@ def main(config_path: str = "config/generate_config.yaml") -> None:
 
     schema_change_date = datetime.strptime(cfg["schema_change_date"], "%Y-%m-%d")
 
+    drift_enabled = cfg.get("drift_enabled", False)
+    drift_start_date = (
+        datetime.strptime(cfg["drift_start_date"], "%Y-%m-%d")
+        if drift_enabled and "drift_start_date" in cfg
+        else None
+    )
+    if drift_enabled:
+        print(f"  [drift] Scenario B enabled — amount drift from {cfg['drift_start_date']}"
+              f" (×{cfg.get('amount_drift_multiplier', 1.3)}, mode={cfg.get('drift_mode','gradual')})")
+
     # ── 1. Customers ──────────────────────────────────────────────────────────
     print("► Generating customers...")
     customers_df = generate_customers(
@@ -126,6 +134,11 @@ def main(config_path: str = "config/generate_config.yaml") -> None:
         fraud_label_min_conditions=cfg["fraud_label_min_conditions"],
         duplicate_rate=cfg["duplicate_rate_offline"],
         rng=rng,
+        drift_enabled=drift_enabled,
+        drift_start_date=drift_start_date,
+        drift_mode=cfg.get("drift_mode", "gradual"),
+        amount_drift_multiplier=cfg.get("amount_drift_multiplier", 1.30),
+        drift_ramp_days=cfg.get("drift_ramp_days", 30),
     )
     # Add partition column before saving
     transactions_df["transaction_date"] = pd.to_datetime(
@@ -137,23 +150,16 @@ def main(config_path: str = "config/generate_config.yaml") -> None:
         partition_col="transaction_date",
     )
 
-    # ── 5. Transaction Items ──────────────────────────────────────────────────
-    print("\n► Generating transaction items...")
-    items_df = generate_transaction_items(
-        transaction_df=transactions_df,
-        rng=rng,
-    )
-    items_df["transaction_date"] = pd.to_datetime(
-        items_df["transaction_date"]
-    ).dt.date.astype(str)
-    save_partitioned_parquet(
-        items_df,
-        base_path=offline_dir / "transaction_items",
-        partition_col="transaction_date",
-    )
-
-    # ── 6. Streaming Events ───────────────────────────────────────────────────
+    # ── 5. Streaming Events ───────────────────────────────────────────────────
     print("\n► Generating streaming events...")
+    # Pass a slim copy of transactions so the event producer can anchor sessions
+    # to actual transactions and inject fraud-correlated signals (otp_failed,
+    # transaction_declined probes) before fraud transaction_attempts.
+    _txn_slim_cols = [
+        "transaction_id", "transaction_timestamp", "transaction_date",
+        "customer_id", "card_id", "merchant_id",
+        "transaction_status", "is_fraud", "amount", "ip_country",
+    ]
     streaming_summary = generate_streaming_events(
         customer_ids=customer_ids,
         merchant_ids=merchant_ids,
@@ -168,16 +174,16 @@ def main(config_path: str = "config/generate_config.yaml") -> None:
         duplicate_rate=cfg["duplicate_rate_stream"],
         output_path=streaming_dir / "fraud_events.json",
         rng=rng,
+        transaction_df=transactions_df[_txn_slim_cols].copy(),
     )
 
-    # ── 7. Quality Report ─────────────────────────────────────────────────────
+    # ── 6. Quality Report ─────────────────────────────────────────────────────
     print("\n► Computing quality report...")
     quality_df = compute_offline_quality(
         customers_df=customers_df,
         merchants_df=merchants_df,
         cards_df=cards_df,
         transactions_df=transactions_df,
-        items_df=items_df,
         schema_change_date=schema_change_date,
         streaming_summary=streaming_summary,
     )

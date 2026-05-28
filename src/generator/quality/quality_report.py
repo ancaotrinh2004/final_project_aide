@@ -14,7 +14,6 @@ def compute_offline_quality(
     merchants_df: pd.DataFrame,
     cards_df: pd.DataFrame,
     transactions_df: pd.DataFrame,
-    items_df: pd.DataFrame,
     schema_change_date: datetime,
     streaming_summary: dict,
 ) -> pd.DataFrame:
@@ -124,8 +123,8 @@ def compute_offline_quality(
         "check": "fraud_label",
         "metric": "fraud_rate",
         "value": round(fraud_rate * 100, 2),
-        "expected": "~2%",
-        "status": "PASS" if 0.018 <= fraud_rate <= 0.022 else "WARN",
+        "expected": "~10%",
+        "status": "PASS" if 0.08 <= fraud_rate <= 0.12 else "WARN",
     })
     report.append({
         "check": "fraud_label",
