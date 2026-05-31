@@ -6,7 +6,27 @@ Real-time fraud scoring system built on Kubernetes (Kind), covering data generat
 |---|---|
 | Sections completed | 01 Data Generator · 02 Schema Design · 03 Drift Simulation · 04.1 ML Design |
 | AI track | ML (XGBoost, PR-AUC = 0.8148) |
-| Author | ancaotrinh@gmail.com |
+<!-- | Author | ancaotrinh@gmail.com | -->
+
+---
+
+## Table of Contents
+
+- [Architecture Overview](#architecture-overview)
+- [Prerequisites](#prerequisites)
+- [Quick Start](#quick-start)
+  - [Step 1 — Create Kubernetes Cluster](#step-1--create-kubernetes-cluster)
+  - [Step 2 — Deploy Core Infrastructure](#step-2--deploy-core-infrastructure)
+  - [Step 3 — Generate Data](#step-3--generate-data)
+  - [Step 4 — Upload Raw Data & Init Gold Schema](#step-4--upload-raw-data--init-gold-schema)
+  - [Step 5 — Run Data Pipelines via Airflow](#step-5--run-data-pipelines-via-airflow)
+  - [Step 6 — Quick test](#step-6--quick-test)
+  - [Step 7 — Run Tests](#step-7--run-tests)
+  - [Step 8 — Verify Sample Outputs](#step-8--verify-sample-outputs)
+- [Evidence](#evidence)
+- [Design Documents](#design-documents)
+- [CI/CD](#cicd)
+<!-- - [Rollback](#rollback) -->
 
 ---
 
@@ -101,22 +121,13 @@ Trigger DAGs in this order:
 | `dag_drift_monitor` | `@daily` | PSI drift detection |
 | `dag_ml_retrain_trigger` | daily 07:00 | Check drift/quality → trigger retrain |
 
-### Step 6 — Test Online Inference
+### Step 6 — Quick test 
 
 ```bash
 # Port-forward the KServe predictor pod
 kubectl port-forward -n fraud-infra \
   $(kubectl get pod -n fraud-infra -l serving.knative.dev/service=fraud-predictor -o name | head -1) \
   8080:8080
-
-# Health check
-curl http://localhost:8080/v2/health/ready
-
-# Predict
-curl -s -X POST http://localhost:8080/v1/models/fraud:predict \
-  -H "Content-Type: application/json" \
-  -d '{"instances":[{"customer_id":"C0000019","txn_amount":450.0,"txn_hour":2}]}'
-# → {"predictions":[{"customer_id":"C0000019","fraud_score":0.031,"is_fraud":false}]}
 
 # Full test script
 python scripts/test_inference.py --host localhost --port 8080
@@ -205,11 +216,11 @@ Setup: `docs/jenkins-setup.md`
 
 ---
 
-## Rollback
+<!-- ## Rollback
 
 | Component | Command |
 |---|---|
 | Airflow | `helm rollback airflow 0 -n airflow` |
 | kube-prometheus-stack | `helm rollback kube-prom 0 -n monitoring` |
 | DataHub | `helm rollback datahub 0 -n datahub` |
-| Inference image | `kubectl patch inferenceservice fraud -n fraud-infra --type=json -p='[{"op":"replace","path":"/spec/predictor/containers/0/image","value":"ancaotrinh/fraud-inference:<prev-sha>"}]'` |
+| Inference image | `kubectl patch inferenceservice fraud -n fraud-infra --type=json -p='[{"op":"replace","path":"/spec/predictor/containers/0/image","value":"ancaotrinh/fraud-inference:<prev-sha>"}]'` | -->

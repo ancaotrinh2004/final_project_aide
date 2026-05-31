@@ -16,4 +16,4 @@ scikit-learn
 xgboost 
 fastapi
 uvicorn
-prometheus-fastapi-instrumentator 
+prometheus-fastapi-instrumentator
