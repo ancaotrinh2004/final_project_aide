@@ -2,8 +2,8 @@
 //
 // Changeset logic (auto-detected):
 //   src/pipelines/** or infra/docker/airflow/**  → rebuild + push Airflow image → helm upgrade
-//   dags/**                                      → update airflow-dags ConfigMap + restart dag-processor
-//   config/pipeline_config.yaml                  → update fraud-pipeline-config ConfigMap + restart workers
+//   dags/**                                      → update airflow-dags ConfigMap + restart dag-processor/worker/scheduler
+//   configs/pipeline_config.yaml                 → update fraud-pipeline-config ConfigMap + restart workers
 //   infra/helm/airflow/**                        → helm upgrade only (no image rebuild)
 //
 // Manual trigger:
@@ -106,7 +106,7 @@ spec:
                 anyOf {
                     changeset "src/pipelines/**"
                     changeset "dags/**"
-                    changeset "config/**"
+                    changeset "configs/**"
                     expression { env.RUN_DEPLOY == 'true' }
                 }
             }
@@ -114,13 +114,10 @@ spec:
                 sh '''
                     python3 -m venv .ci-venv
                     .ci-venv/bin/pip install --upgrade pip
-                    .ci-venv/bin/pip install \
-                        ruff \
-                        pytest pytest-cov \
-                        numpy pandas scikit-learn xgboost \
-                        fastapi httpx pydantic \
-                        sqlalchemy boto3 pyyaml \
-                        prometheus-fastapi-instrumentator uvicorn
+                    # Install the project's declared deps (mlflow, scikit-learn, xgboost,
+                    # duckdb, psycopg2, great-expectations, ...) + CI-only tooling.
+                    # kserve is NOT needed: tests stub it in sys.modules.
+                    .ci-venv/bin/pip install -r requirements.txt ruff pytest-cov
                 '''
             }
         }
@@ -313,21 +310,27 @@ PYEOF
             steps {
                 sh """
                     kubectl create configmap airflow-dags -n ${env.AIRFLOW_NS} \\
-                        --from-file=dag_bronze_ingest.py=dags/dag_bronze_ingest.py \\
-                        --from-file=dag_silver_transform.py=dags/dag_silver_transform.py \\
-                        --from-file=dag_gold_model.py=dags/dag_gold_model.py \\
-                        --from-file=dag_feat_customer_90d.py=dags/dag_feat_customer_90d.py \\
-                        --from-file=dag_feat_stream_30m.py=dags/dag_feat_stream_30m.py \\
+                        --from-file=dag_batch_bronze.py=dags/dag_batch_bronze.py \\
+                        --from-file=dag_batch_silver.py=dags/dag_batch_silver.py \\
+                        --from-file=dag_batch_features.py=dags/dag_batch_features.py \\
+                        --from-file=dag_batch_gold.py=dags/dag_batch_gold.py \\
+                        --from-file=dag_stream_bronze.py=dags/dag_stream_bronze.py \\
+                        --from-file=dag_stream_silver.py=dags/dag_stream_silver.py \\
+                        --from-file=dag_stream_features.py=dags/dag_stream_features.py \\
                         --from-file=dag_feat_unified.py=dags/dag_feat_unified.py \\
+                        --from-file=dag_feat_backfill.py=dags/dag_feat_backfill.py \\
                         --from-file=dag_ml_label.py=dags/dag_ml_label.py \\
                         --from-file=dag_ml_train.py=dags/dag_ml_train.py \\
                         --from-file=dag_ml_batch_score.py=dags/dag_ml_batch_score.py \\
-                        --from-file=dag_drift_monitor.py=dags/dag_drift_monitor.py \\
-                        --from-file=dag_feat_backfill.py=dags/dag_feat_backfill.py \\
                         --from-file=dag_ml_retrain_trigger.py=dags/dag_ml_retrain_trigger.py \\
+                        --from-file=dag_drift_monitor.py=dags/dag_drift_monitor.py \\
                         --dry-run=client -o yaml | kubectl apply -f -
 
+                    # DAGs are mounted via subPath (kubelet never refreshes those) and
+                    # KPO env_vars live in the DAG file, so the worker + scheduler must
+                    # restart too — not just the dag-processor.
                     kubectl rollout restart deployment/airflow-dag-processor \\
+                        deployment/airflow-scheduler statefulset/airflow-worker \\
                         -n ${env.AIRFLOW_NS}
                     kubectl rollout status deployment/airflow-dag-processor \\
                         -n ${env.AIRFLOW_NS} --timeout=3m
@@ -341,7 +344,7 @@ PYEOF
                 allOf {
                     branch 'main'
                     anyOf {
-                        changeset "config/pipeline_config.yaml"
+                        changeset "configs/pipeline_config.yaml"
                         expression { env.RUN_DEPLOY == 'true' }
                     }
                 }
@@ -349,7 +352,7 @@ PYEOF
             steps {
                 sh """
                     kubectl create configmap fraud-pipeline-config -n ${env.AIRFLOW_NS} \\
-                        --from-file=pipeline_config.yaml=config/pipeline_config.yaml \\
+                        --from-file=pipeline_config.yaml=configs/pipeline_config.yaml \\
                         --dry-run=client -o yaml | kubectl apply -f -
 
                     kubectl rollout restart statefulset/airflow-worker \\

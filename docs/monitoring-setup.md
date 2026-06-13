@@ -1,153 +1,101 @@
-# Monitoring Setup Guide
+# 📊 Monitoring Setup
 
-Setup stack monitoring **Fraud Detection** trên Kubernetes (Kind): Prometheus, Pushgateway, và Grafana.
+> Deploy the **observability core** — Prometheus, Pushgateway, Grafana, and Alertmanager — via the kube-prometheus-stack. Pipeline metrics land in Pushgateway; the inference service is scraped via a ServiceMonitor; drift alerts route to Discord.
 
-| Component | App Version | Helm Chart |
-|---|---|---|
-| Prometheus | 3.4.0 | `prometheus-community/kube-prometheus-stack 85.2.0` |
-| Grafana | 13.0.1 | `grafana/grafana 12.3.3` (subchart) |
-| Pushgateway | — | `infra/k8s/pushgateway.yaml` |
-| Namespace | `monitoring` | — |
+<table>
+<tr><th>Component</th><th>Version</th><th>Helm Chart</th></tr>
+<tr><td>Prometheus</td><td>3.4.0</td><td><code>prometheus-community/kube-prometheus-stack 85.2.0</code></td></tr>
+<tr><td>Grafana</td><td>13.x</td><td>(subchart)</td></tr>
+<tr><td>Alertmanager</td><td>0.32.x</td><td>(subchart)</td></tr>
+<tr><td>Pushgateway</td><td>v1.10.0</td><td><code>infra/k8s/pushgateway.yaml</code></td></tr>
+</table>
 
----
-
-## Prerequisites
-
-| Tool | Dùng để |
-|---|---|
-| [kubectl](https://kubernetes.io/docs/tasks/tools/) | Tương tác với cluster |
-| [helm](https://helm.sh/docs/intro/install/) | Deploy services lên Kubernetes |
+> [!NOTE]
+> **Prerequisites:** `kubectl` + `helm`, and a running Kind cluster. Namespace `monitoring`.
 
 ---
 
-## Cấu trúc file liên quan
+## 🚀 Setup
 
-```
-infra/
-├── helm/monitoring/
-│   └── values.yaml          # kube-prometheus-stack overrides
-└── k8s/
-    └── pushgateway.yaml     # Pushgateway Deployment + Service
-
-scripts/
-└── test_monitoring.py       # Script kiểm tra scrape targets + Pushgateway
-```
-
----
-
-## Bước 1 — Tạo namespace
+### 1. Namespace + repo
 
 ```bash
 kubectl create namespace monitoring
-```
-
----
-
-## Bước 2 — Thêm Helm repo
-
-```bash
 helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
 helm repo update
 ```
 
----
-
-## Bước 3 — Deploy Pushgateway
+### 2. Pushgateway — sink for short-lived batch-job metrics
 
 ```bash
 kubectl apply -f infra/k8s/pushgateway.yaml
+kubectl get pods -n monitoring -l app=pushgateway   # pushgateway-xxx  Running
 ```
 
-Kiểm tra:
-
-```bash
-kubectl get pods -n monitoring -l app=pushgateway
-# pushgateway-xxx   1/1   Running
-```
-
----
-
-## Bước 4 — Deploy kube-prometheus-stack
+### 3. kube-prometheus-stack
 
 ```bash
 helm upgrade --install kube-prom prometheus-community/kube-prometheus-stack \
-  --namespace monitoring \
-  --version 85.2.0 \
-  -f infra/helm/monitoring/values.yaml \
-  --timeout 10m
+  --namespace monitoring --version 85.2.0 \
+  -f infra/helm/monitoring/values.yaml --timeout 10m
 ```
 
-Kiểm tra tất cả pods Running (chờ ~3 phút để Grafana khởi động hoàn toàn):
+Wait for all pods Running (~3 min for Grafana):
 
-```bash
-kubectl get pods -n monitoring
 ```
-
-Expected:
-```
-alertmanager-kube-prom-kube-prometheus-alertmanager-0   2/2   Running
-kube-prom-grafana-xxx                                   3/3   Running
-kube-prom-kube-prometheus-operator-xxx                  1/1   Running
-kube-prom-kube-state-metrics-xxx                        1/1   Running
-kube-prom-prometheus-node-exporter-xxx                  1/1   Running
-prometheus-kube-prom-kube-prometheus-prometheus-0       2/2   Running
-pushgateway-xxx                                         1/1   Running
+alertmanager-...-0                       2/2  Running
+kube-prom-grafana-xxx                    3/3  Running
+kube-prom-kube-prometheus-operator-xxx   1/1  Running
+prometheus-...-0                         2/2  Running
+pushgateway-xxx                          1/1  Running
 ```
 
 ---
 
-## Bước 5 — Kiểm tra
-
-```bash
-python scripts/test_monitoring.py
-```
-
-Expected output:
-```
-[PASS] airflow-statsd          → UP
-[PASS] minio                   → UP
-[PASS] pushgateway             → UP
-[PASS] Pushgateway is reachable on :9091
-[PASS] Pushed test metric to Pushgateway (HTTP 200)
-[PASS] Prometheus scraped test metric from Pushgateway ✓
-```
-
----
-
-## Bước 6 — Truy cập Grafana
-
-```bash
-kubectl port-forward svc/kube-prom-grafana -n monitoring 3000:80
-```
-
-Mở **http://localhost:3000**
-
-| Field    | Giá trị              |
-|----------|----------------------|
-| Username | `admin`              |
-| Password | `fraud-grafana-2025` |
-
----
-
-## Bước 7 — Truy cập Prometheus UI
+## ✅ Verify
 
 ```bash
 kubectl port-forward svc/kube-prom-kube-prometheus-prometheus -n monitoring 9090:9090
+# http://localhost:9090 → Status → Targets
 ```
 
-Mở **http://localhost:9090** → **Status → Targets** để kiểm tra 3 scrape targets UP:
-- `airflow-statsd`
-- `minio`
-- `pushgateway`
+Scrape targets that should be **UP**: `airflow-statsd`, `minio`, `pushgateway`, and `fraud-inference-metrics` (appears after the Phase-13 ServiceMonitor is applied; it carries label `release: kube-prom`).
+
+> [!NOTE]
+> 4 targets report **down** on Kind — `kube-controller-manager`, `kube-etcd`, `kube-proxy`, `kube-scheduler` bind to `127.0.0.1` and aren't scrapable from a pod. This is expected.
+
+### Grafana
+
+```bash
+kubectl port-forward svc/kube-prom-grafana -n monitoring 3000:80
+# http://localhost:3000  (admin / fraud-grafana-2025)
+```
+
+The `Fraud Detection — Overview` dashboard (auto-loaded from `infra/k8s/grafana-fraud-dashboard.yaml`) shows drift PSI, inference latency, and model quality:
+
+<p align="center">
+  <img src="assets/grafana_dashboard.png" width="820" alt="Grafana Fraud Detection Overview dashboard"/>
+  <br/><em>Grafana — drift PSI per feature, inference p50/p95/p99 latency, and model PR-AUC/F1.</em>
+</p>
 
 ---
 
-## Cập nhật values.yaml
+## 🔔 Drift alerts → Discord
+
+Drift alerting is **rule-based** (no code): the `fraud-drift-alerts` PrometheusRule fires on PSI thresholds and Alertmanager routes `category: drift` to Discord via native `discord_configs` (see [governance-setup.md](governance-setup.md) and `infra/k8s/fraud-drift-alerts.yaml`).
+
+<p align="center">
+  <img src="assets/alert_drift_monitor.png" width="49%" alt="Drift alert firing in Prometheus"/>
+  <img src="assets/alert_discord.png" width="49%" alt="Drift alert delivered to Discord"/>
+  <br/><em>Feature-drift alert firing in Prometheus → delivered to Discord.</em>
+</p>
+
+---
+
+## 🔄 Update values
 
 ```bash
 helm upgrade kube-prom prometheus-community/kube-prometheus-stack \
-  --namespace monitoring \
-  --version 85.2.0 \
-  -f infra/helm/monitoring/values.yaml \
-  --timeout 10m
+  --namespace monitoring --version 85.2.0 \
+  -f infra/helm/monitoring/values.yaml --timeout 10m
 ```

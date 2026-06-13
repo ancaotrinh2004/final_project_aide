@@ -1,95 +1,67 @@
-# Airflow Setup Guide
+# 🌬️ Airflow Setup
 
-Setup toàn bộ stack **Fraud Detection** trên Kubernetes (Kind): PostgreSQL, MinIO, và Apache Airflow.
+> Deploy the **Fraud Detection** orchestration core on Kubernetes (Kind): PostgreSQL, MinIO, and Apache Airflow with the CeleryExecutor. This is the foundation every other component builds on.
 
-| Component | App Version | Helm Chart |
-|---|---|---|
-| Apache Airflow | **3.2.0** | `apache-airflow 1.21.0` |
-| PostgreSQL | 18.3.0 | `bitnami/postgresql 18.6.2` |
-| MinIO | RELEASE.2024-12-18 | `minio/minio 5.4.0` |
-| Kubernetes | Kind (local) | — |
-| Executor | CeleryExecutor | — |
+<table>
+<tr><th>Component</th><th>Version</th><th>Helm Chart</th></tr>
+<tr><td>Apache Airflow</td><td><b>3.2.0</b></td><td><code>apache-airflow 1.21.0</code></td></tr>
+<tr><td>PostgreSQL</td><td>18.x</td><td><code>bitnami/postgresql 18.6.2</code></td></tr>
+<tr><td>MinIO</td><td>2024-12-18</td><td><code>minio/minio 5.4.0</code></td></tr>
+<tr><td>Executor</td><td>Celery</td><td>—</td></tr>
+</table>
 
 ---
 
-## Prerequisites
+## 📋 Prerequisites
 
 | Tool | Dùng để |
 |---|---|
-| [Docker](https://docs.docker.com/get-docker/) | Build và push image |
-| [kind](https://kind.sigs.k8s.io/docs/user/quick-start/#installation) | Tạo Kubernetes cluster local |
+| [Docker](https://docs.docker.com/get-docker/) | Build & push image |
+| [kind](https://kind.sigs.k8s.io/) | Tạo Kubernetes cluster local |
 | [kubectl](https://kubernetes.io/docs/tasks/tools/) | Tương tác với cluster |
-| [helm](https://helm.sh/docs/intro/install/) | Deploy services lên Kubernetes |
+| [helm](https://helm.sh/docs/intro/install/) | Deploy services |
 | [uv](https://docs.astral.sh/uv/) | Chạy scripts Python (upload data, init schema) |
 
----
-
-## Cấu trúc file liên quan
+<details>
+<summary><b>📁 Related files</b></summary>
 
 ```
-config/
-└── pipeline_config.yaml      # Cấu hình paths, credentials cho pipelines
-
-infra/
-├── docker/airflow/
-│   ├── Dockerfile                  # Custom image — extend apache/airflow:3.2.0
-│   ├── requirements.txt            # Pipeline deps (deltalake, boto3, s3fs, psycopg2)
-│   └── requirements-governance.txt # DataHub lineage plugin (separate layer)
-├── helm/airflow/
-│   └── values.yaml           # Helm values cho Kind cluster
-└── k8s/
-    └── fraud-pipeline-secret.yaml  # K8s Secret (tham khảo — không dùng cho local)
-
-dags/                          # DAG files (TaskFlow API)
-scripts/
-├── upload_raw_to_minio.py     # Upload raw data lên MinIO
-└── init_gold_schema.py        # Khởi tạo Gold schema trên PostgreSQL
-src/pipelines/                 # Pipeline source code (baked vào Docker image)
+configs/pipeline_config.yaml          # paths + credentials cho pipelines
+infra/docker/airflow/
+  ├── Dockerfile                       # custom image — extends apache/airflow:3.2.0
+  ├── requirements.txt                 # pipeline deps (deltalake, boto3, s3fs, psycopg2)
+  └── requirements-governance.txt      # DataHub lineage plugin (separate layer)
+infra/helm/airflow/values.yaml         # Helm values cho Kind
+dags/                                  # 14 DAG files (TaskFlow API)
+scripts/setup/                         # upload_raw_to_minio.py, init_gold_schema.py
+src/pipelines/                         # pipeline source (baked vào image)
 ```
+</details>
 
 ---
 
-## Bước 1 — Tạo Kind cluster
+## 🚀 Setup
+
+### 1. Tạo Kind cluster
 
 ```bash
 kind create cluster --name fraud-detection
+kubectl config current-context   # → kind-fraud-detection
 ```
 
-Kiểm tra cluster:
-
-```bash
-kind get clusters
-# fraud-detection
-
-kubectl config current-context
-# kind-fraud-detection
-```
-
----
-
-## Bước 2 — Thêm Helm repos
+### 2. Thêm Helm repos + namespaces
 
 ```bash
 helm repo add apache-airflow https://airflow.apache.org
 helm repo add bitnami https://charts.bitnami.com/bitnami
 helm repo add minio https://charts.min.io/
 helm repo update
-```
 
----
-
-## Bước 3 — Tạo namespaces
-
-```bash
 kubectl create namespace fraud-infra
 kubectl create namespace airflow
 ```
 
----
-
-## Bước 4 — Deploy PostgreSQL
-
-PostgreSQL lưu **Gold tables** (dim, fact, feature tables) và **pipeline run logs**.
+### 3. Deploy PostgreSQL — Gold tables + pipeline logs
 
 ```bash
 helm install fraud-postgres bitnami/postgresql \
@@ -100,23 +72,12 @@ helm install fraud-postgres bitnami/postgresql \
   --set primary.persistence.size=5Gi
 ```
 
-Kiểm tra PostgreSQL đang chạy:
-
 ```bash
 kubectl get pods -n fraud-infra -l app.kubernetes.io/name=postgresql
 # fraud-postgres-postgresql-0   1/1   Running
 ```
 
-**Service URL trong cluster:**
-```
-fraud-postgres-postgresql.fraud-infra.svc.cluster.local:5432
-```
-
----
-
-## Bước 5 — Deploy MinIO
-
-MinIO là S3-compatible object storage cho **Bronze và Silver Delta Lake** tables.
+### 4. Deploy MinIO — S3 store cho Bronze/Silver Delta Lake
 
 ```bash
 helm install fraud-minio minio/minio \
@@ -128,277 +89,150 @@ helm install fraud-minio minio/minio \
   --set resources.requests.memory=512Mi
 ```
 
-Kiểm tra MinIO đang chạy:
+> [!TIP]
+> Mở MinIO Console từ host: `kubectl port-forward svc/fraud-minio -n fraud-infra 9000:9000 9001:9001` → http://localhost:9001 (login `fraud_minio_user` / `fraud_minio_pass`).
+
+### 5. Upload raw data
+
+Port-forward MinIO (bước 4), rồi từ project root:
 
 ```bash
-kubectl get pods -n fraud-infra -l app=minio
-# fraud-minio-xxx   1/1   Running
+uv run scripts/setup/upload_raw_to_minio.py
 ```
 
-**Service URLs trong cluster:**
-```
-http://fraud-minio.fraud-infra.svc.cluster.local:9000   (S3 API)
-http://fraud-minio-console.fraud-infra.svc.cluster.local:9001  (Console UI)
-```
+Tự tạo buckets (`raw`, `bronze`, `silver`) và upload `customers/merchants/cards.parquet`, `transactions/` (partitioned), và `streaming/fraud_events.json`.
 
-### Truy cập MinIO Console từ host
+### 6. Build & push image
 
+> [!IMPORTANT]
+> Chạy từ **project root** — build context phải là root để `COPY src/` hoạt động.
 
 ```bash
-kubectl port-forward svc/fraud-minio -n fraud-infra 9000:9000 9001:9001
-```
-
-Mở trình duyệt tại **http://localhost:9001** (Console UI).
-
-| Field    | Giá trị            |
-|----------|--------------------|
-| Username | `fraud_minio_user` |
-| Password | `fraud_minio_pass` |
-
----
-
-## Bước 6 — Upload raw data lên MinIO
-
-Port-forward MinIO trước (xem Bước 5), sau đó chạy script upload từ thư mục gốc project:
-
-```bash
-uv run scripts/upload_raw_to_minio.py
-```
-
-Script sẽ tự tạo buckets (`raw`, `bronze`, `silver`) nếu chưa có, rồi upload:
-- `s3://raw/offline/customers.parquet`
-- `s3://raw/offline/merchants.parquet`
-- `s3://raw/offline/cards.parquet`
-- `s3://raw/offline/transactions/` (partitioned by `transaction_date`)
-- `s3://raw/offline/transaction_items/` (partitioned by `transaction_date`)
-- `s3://raw/streaming/fraud_events.json` (~9.4 GB)
-
-
----
-
-## Bước 7 — Build và push Docker image
-
-Image extend từ `apache/airflow:3.2.0`, bake `src/pipelines/` vào trong.
-
-> **Chạy từ thư mục gốc project** (build context phải là root để `COPY src/` hoạt động đúng).
-
-```bash
-# Build
-docker build \
-  -f infra/docker/airflow/Dockerfile \
-  -t ancaotrinh/fraud-airflow:latest \
-  .
-
-# Push lên Docker Hub
+docker build -f infra/docker/airflow/Dockerfile -t ancaotrinh/fraud-airflow:latest .
 docker push ancaotrinh/fraud-airflow:latest
 ```
 
-> **2 layer build**: Layer 1 cài `requirements.txt` (ML/lakehouse deps — cached). Layer 2 cài `requirements-governance.txt` (DataHub lineage plugin — layer riêng để không invalidate cache khi chỉ update governance deps).
+> [!NOTE]
+> **2-layer build:** layer 1 cài `requirements.txt` (ML/lakehouse deps — cached); layer 2 cài `requirements-governance.txt` (DataHub plugin — tách riêng để không invalidate cache).
 
----
-
-## Bước 8 — Tạo ConfigMaps
-
-### ConfigMap DAGs
-
-DAG files được mount vào pods qua ConfigMap. Dùng `subPath` per file để tránh lỗi [ConfigMap symlink loop](#tại-sao-dùng-subpath-khi-mount-configmap-cho-dags).
+### 7. Tạo ConfigMaps (DAGs + pipeline config)
 
 ```bash
+# 14 DAG files — mount per-file qua subPath (xem ghi chú kỹ thuật)
 kubectl create configmap airflow-dags -n airflow \
-  --from-file=dag_bronze_ingest.py=dags/dag_bronze_ingest.py \
-  --from-file=dag_silver_transform.py=dags/dag_silver_transform.py \
-  --from-file=dag_gold_model.py=dags/dag_gold_model.py \
-  --from-file=dag_feat_customer_90d.py=dags/dag_feat_customer_90d.py \
-  --from-file=dag_feat_stream_30m.py=dags/dag_feat_stream_30m.py \
+  --from-file=dag_batch_bronze.py=dags/dag_batch_bronze.py \
+  --from-file=dag_batch_silver.py=dags/dag_batch_silver.py \
+  --from-file=dag_batch_features.py=dags/dag_batch_features.py \
+  --from-file=dag_batch_gold.py=dags/dag_batch_gold.py \
+  --from-file=dag_stream_bronze.py=dags/dag_stream_bronze.py \
+  --from-file=dag_stream_silver.py=dags/dag_stream_silver.py \
+  --from-file=dag_stream_features.py=dags/dag_stream_features.py \
   --from-file=dag_feat_unified.py=dags/dag_feat_unified.py \
+  --from-file=dag_feat_backfill.py=dags/dag_feat_backfill.py \
   --from-file=dag_ml_label.py=dags/dag_ml_label.py \
   --from-file=dag_ml_train.py=dags/dag_ml_train.py \
   --from-file=dag_ml_batch_score.py=dags/dag_ml_batch_score.py \
-  --from-file=dag_drift_monitor.py=dags/dag_drift_monitor.py \
-  --from-file=dag_feat_backfill.py=dags/dag_feat_backfill.py \
-  --from-file=dag_ml_retrain_trigger.py=dags/dag_ml_retrain_trigger.py
-```
+  --from-file=dag_ml_retrain_trigger.py=dags/dag_ml_retrain_trigger.py \
+  --from-file=dag_drift_monitor.py=dags/dag_drift_monitor.py
 
-### ConfigMap Pipeline Config
-
-Pipeline config được inject vào pods qua ConfigMap (best practice — không bake vào image).
-
-```bash
+# Pipeline config (inject qua ConfigMap, không bake vào image)
 kubectl create configmap fraud-pipeline-config -n airflow \
-  --from-file=pipeline_config.yaml=config/pipeline_config.yaml
+  --from-file=pipeline_config.yaml=configs/pipeline_config.yaml
 ```
 
----
-
-## Bước 9 — Cài đặt Airflow bằng Helm
+### 8. Helm install Airflow + admin user
 
 ```bash
 helm install airflow apache-airflow/airflow \
-  --namespace airflow \
-  --version 1.21.0 \
-  --values infra/helm/airflow/values.yaml \
-  --timeout 10m
-```
+  --namespace airflow --version 1.21.0 \
+  --values infra/helm/airflow/values.yaml --timeout 10m
 
-
----
-
-## Bước 10 — Tạo admin user
-
-```bash
 kubectl exec -n airflow deployment/airflow-api-server -- \
-  airflow users create \
-  --username admin \
-  --firstname Admin \
-  --lastname User \
-  --role Admin \
-  --email admin@fraud-detection.local \
-  --password admin123
+  airflow users create --username admin --firstname Admin --lastname User \
+  --role Admin --email admin@fraud-detection.local --password admin123
 ```
 
----
-
-## Bước 11 — Khởi tạo Gold schema trên PostgreSQL
-
-Chạy script init schema (cần port-forward PostgreSQL):
+### 9. Khởi tạo Gold schema
 
 ```bash
 kubectl port-forward svc/fraud-postgres-postgresql -n fraud-infra 15432:5432
+# đảm bảo configs/pipeline_config.yaml dùng localhost:15432 khi chạy local
+uv run scripts/setup/init_gold_schema.py
 ```
 
-Cập nhật `config/pipeline_config.yaml` để dùng `localhost:15432` khi chạy script local, sau đó:
+Tạo schema `gold_fraud` + toàn bộ dim/fact/feature tables:
 
-```bash
-uv run scripts/init_gold_schema.py
-```
-
-Script tạo schema `gold_fraud` và toàn bộ bảng: `dim_date`, `dim_customer`, `dim_merchant`, `dim_card`, `fact_transaction`, `fact_fraud_event`, `feat_customer_90d`, `feat_stream_30m`, `feat_customer_unified`.
-
-> Khi Airflow chạy pipeline, config dùng cluster-internal URL nên không cần port-forward.
+<p align="center">
+  <img src="assets/diagram.png" width="720" alt="Gold zone ERD"/>
+  <br/><em>Gold-zone ERD — dimensions, facts, OBT, feature & ML tables in <code>gold_fraud</code>.</em>
+</p>
 
 ---
 
-## Bước 12 — Truy cập Airflow UI
+## ✅ Verify
 
 ```bash
 kubectl port-forward svc/airflow-api-server 8080:8080 -n airflow
-```
+# → http://localhost:8080  (admin / admin123)
 
-Mở **http://localhost:8080**
-
-| Field    | Giá trị    |
-|----------|------------|
-| Username | `admin`    |
-| Password | `admin123` |
-
-Kiểm tra 12 DAGs đã được nhận diện:
-
-```bash
 kubectl exec -n airflow deployment/airflow-dag-processor -c dag-processor \
-  -- airflow dags list
+  -- airflow dags list   # 14 DAGs
 ```
+
+Trigger pipelines theo thứ tự phụ thuộc:
+
+```
+batch_bronze → batch_silver → batch_gold
+                                  │
+                  ┌───────────────┴───────────────┐
+            batch_features                  stream_features
+                  └───────────────┬───────────────┘
+                            feat_unified → ml_label → ml_train
+```
+
+<p align="center">
+  <img src="assets/airflow_batch_bronze.png" width="49%" alt="batch_bronze DAG run"/>
+  <img src="assets/airflow_batch_silver.png" width="49%" alt="batch_silver DAG run"/>
+  <br/><em>Batch Bronze và Silver DAGs chạy thành công trong Airflow Grid view.</em>
+</p>
+
+<p align="center">
+  <img src="assets/airflow_consume_event.png" width="720" alt="stream consume events DAG"/>
+  <br/><em>Streaming pipeline tiêu thụ events từ Kafka topic <code>fraud.events.raw</code>.</em>
+</p>
 
 ---
 
-## Bước 13 — Chạy pipelines theo thứ tự
+## 🔄 Update sau khi đổi code
 
-Trigger thủ công từ Airflow UI hoặc CLI theo thứ tự:
+| Thay đổi | Lệnh |
+|---|---|
+| `src/pipelines/**` | rebuild + push image → `kubectl rollout restart deployment -n airflow && kubectl rollout restart statefulset/airflow-worker -n airflow` |
+| `dags/**` | recreate `airflow-dags` ConfigMap (`--dry-run=client -o yaml \| kubectl apply -f -`) → restart **dag-processor + scheduler + worker** |
+| `configs/pipeline_config.yaml` | recreate `fraud-pipeline-config` ConfigMap → restart worker + dag-processor |
+| `infra/helm/airflow/values.yaml` | `helm upgrade airflow apache-airflow/airflow --version 1.21.0 -f infra/helm/airflow/values.yaml` |
 
-```
-bronze_ingest → silver_transform → gold_model
-                                       │
-                          ┌────────────┴────────────┐
-                feat_customer_90d           feat_stream_30m
-                          └────────────┬────────────┘
-                                  feat_unified
-                                       │
-                                   ml_label
-                                       │
-                                   ml_train
-```
-
-DAGs chạy tự động theo schedule sau khi trigger lần đầu. `ml_batch_score`, `drift_monitor`, `ml_retrain_trigger` và `feat_backfill` chạy theo lịch riêng.
+> [!WARNING]
+> DAGs được mount qua **`subPath`** — kubelet **không** tự refresh chúng. Sau khi đổi ConfigMap **phải restart** dag-processor/scheduler/worker. Vì KPO `env_vars` nằm trong file DAG, worker cũng cần restart. (Trên Kind, nếu pod→Service timeout sau restart, `kubectl rollout restart daemonset/kube-proxy -n kube-system`.)
 
 ---
 
-## Cập nhật sau khi thay đổi code
+## 🛠️ Ghi chú kỹ thuật
 
-### Thay đổi `src/pipelines/` — rebuild image
+<details>
+<summary><b>Tại sao mount DAGs qua subPath?</b></summary>
 
-```bash
-# 1. Rebuild và push
-docker build -f infra/docker/airflow/Dockerfile -t ancaotrinh/fraud-airflow:latest .
-docker push ancaotrinh/fraud-airflow:latest
+Mount cả thư mục ConfigMap tạo symlinks nội bộ (`..data/`); Airflow 3.x DAG walker phát hiện vòng lặp và crash (`RuntimeError: Detected recursive loop when walking DAG directory`). Mount từng file qua `subPath` né được lỗi này.
+</details>
 
-# 2. Rolling restart các Airflow components
-kubectl rollout restart deployment -n airflow
-kubectl rollout restart statefulset/airflow-worker -n airflow
-```
+<details>
+<summary><b>Tại sao bake <code>src/pipelines/</code> vào image (không ConfigMap)?</b></summary>
 
-### Thay đổi `dags/` — chỉ cần cập nhật ConfigMap
+ConfigMap giới hạn 1 MB và không hỗ trợ thư mục lồng nhau. Bake vào image đảm bảo mọi worker pod có đủ code, nhất quán với production.
+</details>
 
-```bash
-kubectl create configmap airflow-dags -n airflow \
-  --from-file=dag_bronze_ingest.py=dags/dag_bronze_ingest.py \
-  --from-file=dag_silver_transform.py=dags/dag_silver_transform.py \
-  --from-file=dag_gold_model.py=dags/dag_gold_model.py \
-  --from-file=dag_feat_customer_90d.py=dags/dag_feat_customer_90d.py \
-  --from-file=dag_feat_stream_30m.py=dags/dag_feat_stream_30m.py \
-  --from-file=dag_feat_unified.py=dags/dag_feat_unified.py \
-  --from-file=dag_ml_label.py=dags/dag_ml_label.py \
-  --from-file=dag_ml_train.py=dags/dag_ml_train.py \
-  --from-file=dag_ml_batch_score.py=dags/dag_ml_batch_score.py \
-  --from-file=dag_drift_monitor.py=dags/dag_drift_monitor.py \
-  --from-file=dag_feat_backfill.py=dags/dag_feat_backfill.py \
-  --from-file=dag_ml_retrain_trigger.py=dags/dag_ml_retrain_trigger.py \
-  --dry-run=client -o yaml | kubectl apply -f -
+<details>
+<summary><b>Tại sao cần <code>PYTHONPATH=/opt/airflow</code>?</b></summary>
 
-kubectl rollout restart deployment/airflow-dag-processor -n airflow
-```
-
-### Thay đổi `config/pipeline_config.yaml`
-
-```bash
-kubectl create configmap fraud-pipeline-config -n airflow \
-  --from-file=pipeline_config.yaml=config/pipeline_config.yaml \
-  --dry-run=client -o yaml | kubectl apply -f -
-
-kubectl rollout restart statefulset/airflow-worker -n airflow
-kubectl rollout restart deployment/airflow-dag-processor -n airflow
-```
-
-### Thay đổi `infra/helm/airflow/values.yaml`
-
-```bash
-helm upgrade airflow apache-airflow/airflow \
-  --namespace airflow \
-  --version 1.21.0 \
-  --values infra/helm/airflow/values.yaml \
-  --timeout 5m
-```
-
----
-
-## Ghi chú kỹ thuật
-
-### Tại sao dùng subPath khi mount ConfigMap cho DAGs?
-
-Khi mount cả thư mục từ ConfigMap, Kubernetes tạo symlinks nội bộ (`..data/`, `..2026_xx_xx.../`). Airflow 3.x's DAG file walker phát hiện vòng lặp và crash:
-
-```
-RuntimeError: Detected recursive loop when walking DAG directory /opt/airflow/dags
-```
-
-Giải pháp: mount từng file DAG riêng lẻ bằng `subPath`. Xem `infra/helm/airflow/values.yaml`.
-
-### Tại sao `src/pipelines/` bake vào image thay vì ConfigMap?
-
-ConfigMap có giới hạn 1 MB và không hỗ trợ cấu trúc thư mục lồng nhau. Bake vào image đảm bảo mọi worker pod đều có đủ code, nhất quán với quy trình production.
-
-### Tại sao dùng `PYTHONPATH=/opt/airflow`?
-
-Airflow task runner chạy trong working directory `/opt/airflow`. Không có `PYTHONPATH`, Python không tìm thấy package `src` và throw `ModuleNotFoundError: No module named 'src'`. Env var này được set trong `values.yaml` section `env:`.
-
-### Tại sao không pin phiên bản pandas/sqlalchemy trong requirements?
-
-Airflow base image đã quản lý các packages này. Pin phiên bản cũ hơn sẽ downgrade và phá vỡ Airflow core (ví dụ: `apache-airflow-core` yêu cầu `sqlalchemy>=2.0.48`). Chỉ thêm packages **mới** không có trong base image.
+Task runner chạy ở `/opt/airflow`; không có `PYTHONPATH`, Python không thấy package `src` → `ModuleNotFoundError`. Set trong `values.yaml` (`env:`).
+</details>
