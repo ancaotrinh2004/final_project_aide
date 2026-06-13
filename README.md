@@ -104,34 +104,31 @@ Produces `data/raw/offline/` (Parquet) + `data/raw/streaming/fraud_events.json` 
 
 ### 3. Core infra — PostgreSQL · MinIO · Airflow
 
-> 📄 **[docs/airflow-setup.md](docs/airflow-setup.md)** — deploy Postgres + MinIO, build & push the Airflow image, upload raw data to MinIO, init the Gold schema, install Airflow, and load the 14 DAGs.
+> 📄 **[docs/airflow.md](docs/airflow.md)** — deploy Postgres + MinIO, build & push the Airflow image, upload raw data to MinIO, init the Gold schema, install Airflow, and load the 14 DAGs.
 
 ### 4. MLflow — experiment tracking & model registry
 
-> 📄 **[docs/mlflow-setup.md](docs/mlflow-setup.md)** — MLflow server with a SQLite backend + MinIO artifact store; replaces the legacy Postgres registry table.
+> 📄 **[docs/mlflow.md](docs/mlflow.md)** — MLflow server with a SQLite backend + MinIO artifact store; replaces the legacy Postgres registry table.
 
 ### 5. Kafka — streaming source
 
-> 📄 **[docs/kafka-setup.md](docs/kafka-setup.md)** — Strimzi operator + KRaft Kafka + topic `fraud.events.raw` feeding the streaming Bronze pipeline.
+> 📄 **[docs/kafka.md](docs/kafka.md)** — Strimzi operator + KRaft Kafka + topic `fraud.events.raw` feeding the streaming Bronze pipeline.
 
 ### 6. Observability — Prometheus · Grafana · Loki · Jaeger
 
-> 📄 **[docs/monitoring-setup.md](docs/monitoring-setup.md)** — kube-prometheus-stack + Pushgateway + the Grafana overview dashboard + drift alerts → Discord.
-> 📄 **[docs/loki-setup.md](docs/loki-setup.md)** — centralized logs (LogQL in Grafana).
-> 📄 **[docs/jaeger-setup.md](docs/jaeger-setup.md)** — distributed tracing of inference (`fetch_features` vs `score_model`).
+> 📄 **[docs/observability.md](docs/observability.md)** — the full metrics + logs + traces stack: kube-prometheus-stack + Pushgateway + Grafana dashboard + drift alerts → Discord, Loki/Promtail logs (LogQL), and Jaeger tracing (`fetch_features` vs `score_model`).
 
 ### 7. Governance — contracts & lineage
 
-> 📄 **[docs/datahub-setup.md](docs/datahub-setup.md)** — DataHub for auto-emitted Bronze→Silver→Gold→Feature lineage.
-> 📄 **[docs/governance-setup.md](docs/governance-setup.md)** — Great Expectations data contracts + Data Docs as the Gold quality gate.
+> 📄 **[docs/governance.md](docs/governance.md)** — Great Expectations data contracts + Data Docs (Gold quality gate) and DataHub for auto-emitted Bronze→Silver→Gold→Feature lineage.
 
 ### 8. Online inference — KServe
 
-> 📄 **[docs/kserve-setup.md](docs/kserve-setup.md)** — cert-manager / Istio / Knative / KServe, build & deploy the `FraudModel` InferenceService (V2 protocol).
+> 📄 **[docs/kserve.md](docs/kserve.md)** — cert-manager / Istio / Knative / KServe, build & deploy the `FraudModel` InferenceService (V2 protocol).
 
 ### 9. CI/CD — Jenkins
 
-> 📄 **[docs/jenkins-setup.md](docs/jenkins-setup.md)** — Jenkins on-cluster with 3 multibranch pipelines (data/ML, inference, IaC).
+> 📄 **[docs/jenkins.md](docs/jenkins.md)** — Jenkins on-cluster with 3 multibranch pipelines (data/ML, inference, IaC).
 
 ### 10. Run the pipelines & validate
 
@@ -162,16 +159,13 @@ python scripts/validate/test_inference.py --host localhost --port 8080
 
 | # | Component | Namespace | Guide |
 |---|---|---|---|
-| 3 | PostgreSQL · MinIO · Airflow | `fraud-infra`, `airflow` | [airflow-setup.md](docs/airflow-setup.md) |
-| 4 | MLflow | `fraud-infra` | [mlflow-setup.md](docs/mlflow-setup.md) |
-| 5 | Kafka (Strimzi) | `fraud-infra` | [kafka-setup.md](docs/kafka-setup.md) |
-| 6 | Prometheus · Grafana | `monitoring` | [monitoring-setup.md](docs/monitoring-setup.md) |
-| 6 | Loki | `monitoring` | [loki-setup.md](docs/loki-setup.md) |
-| 6 | Jaeger | `fraud-infra` | [jaeger-setup.md](docs/jaeger-setup.md) |
-| 7 | DataHub | `datahub` | [datahub-setup.md](docs/datahub-setup.md) |
-| 7 | Data Governance (GE) | — | [governance-setup.md](docs/governance-setup.md) |
-| 8 | KServe Inference | `fraud-infra` | [kserve-setup.md](docs/kserve-setup.md) |
-| 9 | Jenkins CI/CD | `jenkins` | [jenkins-setup.md](docs/jenkins-setup.md) |
+| 3 | PostgreSQL · MinIO · Airflow | `fraud-infra`, `airflow` | [airflow.md](docs/airflow.md) |
+| 4 | MLflow | `fraud-infra` | [mlflow.md](docs/mlflow.md) |
+| 5 | Kafka (Strimzi) | `fraud-infra` | [kafka.md](docs/kafka.md) |
+| 6 | Observability — Prometheus · Grafana · Loki · Jaeger | `monitoring`, `fraud-infra` | [observability.md](docs/observability.md) |
+| 7 | Governance — Great Expectations · DataHub | `datahub` | [governance.md](docs/governance.md) |
+| 8 | KServe Inference | `fraud-infra` | [kserve.md](docs/kserve.md) |
+| 9 | Jenkins CI/CD | `jenkins` | [jenkins.md](docs/jenkins.md) |
 
 ---
 

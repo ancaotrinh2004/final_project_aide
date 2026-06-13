@@ -10,7 +10,7 @@
 </table>
 
 > [!NOTE]
-> **Prerequisites:** Kind cluster running and MinIO deployed (see [airflow-setup.md](airflow-setup.md) step 4) — MLflow stores artifacts in MinIO.
+> **Prerequisites:** Kind cluster running and MinIO deployed (see [airflow.md](airflow.md) step 4) — MLflow stores artifacts in MinIO.
 
 ---
 

@@ -102,6 +102,11 @@ uv run scripts/setup/upload_raw_to_minio.py
 
 Tự tạo buckets (`raw`, `bronze`, `silver`) và upload `customers/merchants/cards.parquet`, `transactions/` (partitioned), và `streaming/fraud_events.json`.
 
+<p align="center">
+  <img src="assets/minio_object_storage.png" width="820" alt="MinIO console — raw/bronze/silver buckets"/>
+  <br/><em>MinIO object storage — <code>raw</code>/<code>bronze</code>/<code>silver</code> buckets backing the Delta Lake lakehouse.</em>
+</p>
+
 ### 6. Build & push image
 
 > [!IMPORTANT]
