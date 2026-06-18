@@ -312,7 +312,7 @@ if __name__ == "__main__":
         default="file",
         help=(
             "file: write events to fraud_events.json only (default). "
-            "kafka-replay: write file then replay to Kafka with pacing. "
+            "kafka-replay:w write file then replay to Kafka with pacing. "
             "kafka-live: write file then generate live events to Kafka."
         ),
     )
